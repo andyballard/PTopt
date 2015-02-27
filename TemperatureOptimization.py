@@ -9,18 +9,20 @@ from scipy import interpolate
 
 class TemperatureEst(object):
 
-    def __init__(self, Energies, Entropies):
+    def __init__(self, Energies, Entropies, Ndof, kappa, ptarget=0.22):
 
-        self.kappa = 87*0.5
+        # Ndof = 3*Natoms - 6 usually
+        self.kappa = Ndof * 0.5
+#         self.kappa = 87*0.5
 #         self.kappa = (3*38-6)*0.5
         self.ExactGammaAve = False
 
-        self.ptarget = 0.22
+        self.ptarget = ptarget
         self.g = 1.18331
         self.Ti=0.0125#*g*g
 
 
-        data = np.loadtxt("min.data") 
+#         data = np.loadtxt("min.data") 
         self.E = Energies
         self.S = Entropies
 
@@ -129,7 +131,7 @@ class TemperatureEst(object):
 
         
 
-    def pot(self,Tc):
+    def cost(self,Tc):
         """ Return cost function and derivative:
             C(P_acc(T)) = (P_acc(T) - target)**2
         """
@@ -185,7 +187,7 @@ class TemperatureEst(object):
         
 #         Pi = self.calcPw(Tlow)
 #         print "I am here", Tc,Tlow
-#         ret = fmin_l_bfgs_b(self.pot,[Tc],bounds=[(Tlow+0.0001,g*g*Tlow)],iprint=1,factr=1e6)
+#         ret = fmin_l_bfgs_b(self.cost,[Tc],bounds=[(Tlow+0.0001,g*g*Tlow)],iprint=1,factr=1e6)
         print "TempOptfromlist> Tc", Tc
 #         ret = fmin_l_bfgs_b(self.calcCostfromlist,[Tc],bounds=[(Tlow+0.0001,g*g*Tlow)],iprint=0,factr=1e2)
         a = Tc
@@ -199,7 +201,7 @@ class TemperatureEst(object):
         Tc = Ti*(1.+0.001)
         self.Ti = Ti
         
-        ret = fmin_l_bfgs_b(self.pot,[Tc],bounds=[(Ti+0.0001,self.g*self.g*Ti)],iprint=1,factr=1e2)
+        ret = fmin_l_bfgs_b(self.cost,[Tc],bounds=[(Ti+0.0001,self.g*self.g*Ti)],iprint=1,factr=1e2)
 
         return ret
 
@@ -237,7 +239,7 @@ class TemperatureEst(object):
         Tc=Ti+0.001
         while(Tc<Ti+0.020):
         #while(Tc<Ttrue*5):
-            alist = pot(Tc)
+            alist = cost(Tc)
             a=alist[0]
             print a,alist[1],(a-alast)/0.0001,Tc#,(Tc-Ttrue)/Ttrue
             Tc = Tc+0.0001
