@@ -9,7 +9,7 @@ from scipy import interpolate
 
 class TemperatureEst(object):
 
-    def __init__(self, Energies, Entropies, Ndof, kappa, ptarget=0.22):
+    def __init__(self, Energies, Entropies, Ndof, ptarget=0.22):
 
         # Ndof = 3*Natoms - 6 usually
         self.kappa = Ndof * 0.5
@@ -30,55 +30,15 @@ class TemperatureEst(object):
     def calcPw(self,T):
 
         F = self.E - T * self.S
-#         F=pele.free_energy(self.E,self.pgo,self.vib,T,self.kappa,h=1)
-        Fmin=np.min(F)
 
+        Fmin=np.min(F)
         P=np.exp(-(F-Fmin)/T)
         
         P = P / np.sum(P)
-        
+
         return P
         
-    def calcCostfromlist(self,Tc):
 
-        E = self.E
-        kappa = self.kappa
-        Ti = self.Ti
-
-        dat = self.calcPaccestfromlist(Tc)
-        p = dat[0]
-        pprime = dat[1]
-
-        C = 0.5 * ((p-self.ptarget)**2) 
-        Cprime = (p-self.ptarget) * pprime
-
-        return C, Cprime
-
-    def calcPaccestfromlist(self,Tc):
-
-#         Ts = Tc[0]
-        # calc Pacc
-        Ts = Tc
-        # calc paccest
-        deltaT = Ts-self.Ti
-        Vavei = self.calcEavefromlist(Ts)
-        Vavec = self.calcEavefromlist(Ts)
-        deltaVave = Vavec-Vavei
-        Cvidat = self.calcCvfrominterp(self.Ti)
-        Cvi = Cvidat[0]
-        Cvcdat = self.calcCvfrominterp(Ts)
-        Cvc = Cvcdat[0]
-        dCvcdT = Cvcdat[1]
-
-        delta = self.kappa*deltaT + deltaVave
-        r = sqrt(Cvi*self.Ti**2 + Cvc*Ts**2)
-        Pacc = erfc(delta/(sqrt(2)*r)) 
-
-        # calc dPacc/dT 
-        dPaccdT = 1. - (delta)/(2*r**2) * (2*Ts + Ts**2 * dCvcdT/Cvc)
-        dPaccdT = dPaccdT * Cvc/(sqrt(2)*r) * (- exp(-delta**2/(2*(r**2))))
-
-        return Pacc, dPaccdT
 
     def calcPaccest(self,Tc):
 
@@ -107,29 +67,15 @@ class TemperatureEst(object):
 
         return Pacc_est
 
-    def calcPaccest_ww(self,Tlow,Tc,w,o):
+    def calcEavefromlist(self,T):
+        Pw=self.calcPw(T)
+        Eave = 0.0
+        for i in range(len(Pw)):
+            Eave = Eave + Pw[i] * self.E[i]
 
-        Ti = Tlow
-        E = self.E
-        kappa = self.kappa
-        deltaT = Tc - Ti
-        gamma = Tc/Ti
-        Pacc_est = 0.0
-        pacc = np.zeros((len(E),len(E)))
+        Eave = Eave + self.kappa * T
 
-        Pi = self.calcPw(Ti)
-        Pc = self.calcPw(Tc)
-
-        deltaV =E[o]-E[w]
-
-        chi0=sqrt(kappa)*(gamma-1)*sqrt(1./(gamma**2+1))
-        chi = chi0 * (1+deltaV/(kappa*deltaT))
-        pacc[w,o]=erfc(chi/sqrt(2))
-
-        #return Pi[w]*Pc[o]*pacc[w,o]
-        return pacc[w,o]
-
-        
+        return Eave      
 
     def cost(self,Tc):
         """ Return cost function and derivative:
@@ -178,23 +124,6 @@ class TemperatureEst(object):
         gradE = (paccest-self.ptarget) * dPaccdT
 
         return Energy, gradE
-
-    def TempOptfromlist(self,Tlow):
-
-        Tc = Tlow*(1.+0.001)
-        self.Ti = Tlow
-        g = self.g
-        
-#         Pi = self.calcPw(Tlow)
-#         print "I am here", Tc,Tlow
-#         ret = fmin_l_bfgs_b(self.cost,[Tc],bounds=[(Tlow+0.0001,g*g*Tlow)],iprint=1,factr=1e6)
-        print "TempOptfromlist> Tc", Tc
-#         ret = fmin_l_bfgs_b(self.calcCostfromlist,[Tc],bounds=[(Tlow+0.0001,g*g*Tlow)],iprint=0,factr=1e2)
-        a = Tc
-        ret = fmin_l_bfgs_b(self.calcCostfromlist,[a],bounds=[(Tlow+0.0001,g*g*Tlow)],iprint=1,factr=1e2)
-
-#         return ret[0]
-        return ret
 
     def TempOpt(self,Ti):
 
@@ -247,10 +176,17 @@ class TemperatureEst(object):
     """
 
 def main():
-    p = TemperatureEst()
-    out = p.paccest_list()
+    Ndof = 3.*31-6
+    E, f, pg = np.loadtxt("min.data",usecols=(0,1,2), unpack=True)
+    S = -0.5*f - np.log(pg)
+    print S, E
+    p = TemperatureEst(E, S, 3*31)
+    myp = p.calcPw(0.1)
+    print "P[3]", myp[3]
+    exit()
+#     out = p.paccest_list()
     p.ExactGammaAve= True
-    out2 = p.paccest_list()
-    print out[0],out2[0]
+#     out2 = p.paccest_list()
+#     print out[0],out2[0]
 if "__name__==main()":
     main()
