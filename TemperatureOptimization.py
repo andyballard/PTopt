@@ -1,34 +1,37 @@
 import numpy as np
-import pele.thermodynamics as pele
-import sys
-from math import *
-from pele.optimize import mylbfgs as opt 
 from scipy.optimize import fmin_l_bfgs_b
-from scipy.interpolate import interp1d
-from scipy import interpolate
 
-class TemperatureEst(object):
+from math import sqrt, erfc, pi, exp
+
+class TSequenceOptimizer(object):
 
     def __init__(self, Energies, Entropies, Ndof, ptarget=0.22):
-
-        # Ndof = 3*Natoms - 6 usually
+        """ This class predicts a optimal sequence of Temperatures for Parallel Tempering simulation
+            based upon a database of configurational minima of the energy landscape.
+            Inputs:
+                Energies : array of energies for the configurational minima
+                Entropies : array of entropies for configurational minima 
+                Ndof : number of system degrees of freedom (3*Natoms - 6) usually
+                ptarget : target PT acceptance rate
+        """
         self.kappa = Ndof * 0.5
-#         self.kappa = 87*0.5
-#         self.kappa = (3*38-6)*0.5
+
         self.ExactGammaAve = False
 
         self.ptarget = ptarget
         self.g = 1.18331
-        self.Ti=0.0125#*g*g
 
-
-#         data = np.loadtxt("min.data") 
         self.E = Energies
         self.S = Entropies
 
 
-    def calcPw(self,T):
-
+    def calcMinimaWeights(self,T):
+        """ Calculate equilibrium occupation probabilities for configurational minima
+            Inputs : 
+                T = Temperature of interest
+            returns : 
+                normalized array of weights
+        """
         F = self.E - T * self.S
 
         Fmin=np.min(F)
@@ -38,22 +41,22 @@ class TemperatureEst(object):
 
         return P
         
-
-
-    def calcPaccest(self,Tc):
-
-        Ti = self.Ti
+    def calcPacc(self,Ti,Tc):
+        """ estimate PT acceptance probability
+            Inputs: 
+            Pair of temperatures, Ti, Tc, with Ti<Tc
+        """
         E = self.E
         if self.ExactGammaAve == True : kappa = self.kappa-1
         else: kappa = self.kappa
-        print kappa, "kappa"
+
         deltaT = Tc - Ti
         gamma = Tc/Ti
         Pacc_est = 0.0
         pacc = np.zeros((len(E),len(E)))
 
-        Pi = self.calcPw(Ti)
-        Pc = self.calcPw(Tc)
+        Pi = self.calcMinimaWeights(Ti)
+        Pc = self.calcMinimaWeights(Tc)
 
         for w in range(len(E)):
             for o in range(len(E)):
@@ -62,33 +65,31 @@ class TemperatureEst(object):
                 chi0=sqrt(kappa)*(gamma-1)*sqrt(1./(gamma**2+1))
                 chi = chi0 * (1+deltaV/(kappa*deltaT))
                 pacc[w,o]=erfc(chi/sqrt(2))
+#                 print w,o, pacc[w,o], deltaV,kappa,gamma,deltaT
+
+#                 print w,o, pacc[w,o], chi
+#                 print "chi: ", chi, chi0, deltaV, kappa, deltaT
 
                 Pacc_est = Pacc_est + Pi[w]*Pc[o]*pacc[w,o]
+        
+#         print "in paccest : ", Ti, Tc, kappa, Pi[10], Pc[10], Pacc_est
 
         return Pacc_est
 
-    def calcEavefromlist(self,T):
-        Pw=self.calcPw(T)
-        Eave = 0.0
-        for i in range(len(Pw)):
-            Eave = Eave + Pw[i] * self.E[i]
-
-        Eave = Eave + self.kappa * T
-
-        return Eave      
-
-    def cost(self,Tc):
-        """ Return cost function and derivative:
-            C(P_acc(T)) = (P_acc(T) - target)**2
+    def costAndGradient(self,Ti,Tc):
+        """ Return cost function and derivative for optimizaiton of T sequence:
+            Returns : 
+                (Cost, dC/dT) : tuple 
+                Cost = C(P_acc(T)) = 0.5 * (P_acc(T) - target)**2
+                dC/dT = (P_acc(T)-target) * dP_acc/dT
         """
         E = self.E
         kappa = self.kappa
-        Ti = self.Ti
 
-        paccest = self.calcPaccest(Tc)
-        Pi = self.calcPw(Ti)
-        Pc = self.calcPw(Tc)
-        Energy = 0.5 * ((paccest-self.ptarget)**2) #+ 1000.0 * (1-np.sign(Tc-Ti))
+        paccest = self.calcPacc(Ti,Tc)
+        Pi = self.calcMinimaWeights(Ti)
+        Pc = self.calcMinimaWeights(Tc)
+        Cost = 0.5 * ((paccest-self.ptarget)**2) #+ 1000.0 * (1-np.sign(Tc-Ti))
 
         deltaT = Tc - Ti
         gamma = Tc/Ti
@@ -98,8 +99,8 @@ class TemperatureEst(object):
         pacc = np.zeros(shape=(len(E),len(E)))
 
         # average V for Tc replica needed for derivative below
-        aveVc = self.calcEavefromlist(Tc)
-
+        aveVc = np.dot(self.E, Pc)+ self.kappa * Tc
+        
         for w in range(len(E)):
             for o in range(len(E)):
 
@@ -116,77 +117,77 @@ class TemperatureEst(object):
                 #add term that calculates well probabilities
                 pacc[w,o]=erfc(chi/sqrt(2))
 
+                # TODO: simplify below expression and redefine aveVc properly
                 dPcdT = Pc[o]*(aveVc-self.kappa*Tc - E[o])  / Tc**2  
 
                 dPaccdT = dPaccdT + Pi[w]*pacc[w,o]*dPcdT
                 
 
         gradE = (paccest-self.ptarget) * dPaccdT
+#         print "iteration: ", Tc, Cost, gradE
 
-        return Energy, gradE
+        return Cost, gradE
 
-    def TempOpt(self,Ti):
-
+    def findNextTemperature(self,Ti):
+        """ 
+        Use L-BFGS to find next temperature in sequence
+        """
         Tc = Ti*(1.+0.001)
-        self.Ti = Ti
         
-        ret = fmin_l_bfgs_b(self.cost,[Tc],bounds=[(Ti+0.0001,self.g*self.g*Ti)],iprint=1,factr=1e2)
-
-        return ret
-
-    def paccest_list(self):
+        """ This function to optimize is the cost function, with Ti held fixed"""
+        cost_for_Tc_optimization = lambda x : self.costAndGradient(Ti, x)
         
-        temps=np.loadtxt("temperatures")
-        pest = np.ndarray(shape=len(temps))
-        for i in range(len(temps)-1):
-            self.Ti = temps[i] 
-            Tc = temps[i+1]
-            #print self.Ti, self.calcPaccest(Tc)
-            pest[i] = self.calcPaccest(Tc)
+        Tbest, cost_value, info = fmin_l_bfgs_b(cost_for_Tc_optimization,[Tc],
+                            bounds=[(Ti+0.0001,self.g*self.g*Ti)],
+                            iprint=0,
+                            factr=1e2)
 
-        return (temps,pest)
+        return Tbest
 
-    def iterate(self):
-
-        N=10
-        T0=0.0125
+    def run(self, N=10, T0=0.0125):
+        """ Find temperature sequence.
+            Inputs : 
+                N : Number of temperatures desired
+                T0 : Starting temperature
+        """
     #     T0=0.2597933583E-01
         Tcmin=np.zeros(N)
         Tcmin[0]=T0
 
         for i in range(N-1): 
-            self.Ti=Tcmin[i]
-            tmin=self.TempOpt(Tcmin[i])
+            Ti=Tcmin[i]
+            tmin=self.findNextTemperature(Ti)
             Tcmin[i+1]=tmin
             print Tcmin[i], Tcmin[i+1]
 
         print Tcmin
 
-    """
-        alast=0
-        Ti=T0
-        Tc=Ti+0.001
-        while(Tc<Ti+0.020):
-        #while(Tc<Ttrue*5):
-            alist = cost(Tc)
-            a=alist[0]
-            print a,alist[1],(a-alast)/0.0001,Tc#,(Tc-Ttrue)/Ttrue
-            Tc = Tc+0.0001
-            alast = a
-    """
+        return Tcmin
 
-def main():
+def load_gmin_data_file(filename):
+    
     Ndof = 3.*31-6
     E, f, pg = np.loadtxt("min.data",usecols=(0,1,2), unpack=True)
-    S = -0.5*f - np.log(pg)
-    print S, E
-    p = TemperatureEst(E, S, 3*31)
-    myp = p.calcPw(0.1)
-    print "P[3]", myp[3]
-    exit()
-#     out = p.paccest_list()
-    p.ExactGammaAve= True
-#     out2 = p.paccest_list()
-#     print out[0],out2[0]
-if "__name__==main()":
-    main()
+    S = -0.5*f - np.log(pg) 
+
+    return E, S
+
+
+def test():
+    """ Example for LJ31 system """
+    Ndof = 3*31 - 6
+    
+#     E, S = load_gmin_data_file("example_data/min.data")
+    """ Load entries of Energy, Entropy values for configurational minima of LJ31 cluster"""
+    E, S = np.loadtxt("example_data/LJ31.EandS",unpack=True)
+    
+    """ run optimizer"""
+    p = TSequenceOptimizer(E, S, Ndof)
+    optimal_temperatures = p.run(N=5, T0=0.0125)
+    
+    print "Optimal temperature sequence: "
+    for o in optimal_temperatures:
+        print o
+    
+if "__name__== main()":
+    test()
